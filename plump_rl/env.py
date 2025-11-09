@@ -271,11 +271,23 @@ class PlumpEnv(Env):
     def _auto_estimation(self, player_id: int):
         policy = self.opponents[player_id]
         assert policy is not None, "Missing policy for opponent"
-        cant_say = self._cant_say_value(player_id)
-        estimate = policy.estimate(self.hands[player_id], self.config.hand_size, cant_say, self.np_random)
-        if cant_say is not None and estimate == cant_say:
-            alternatives = [v for v in range(self.config.hand_size + 1) if v != cant_say]
-            estimate = int(self.np_random.choice(alternatives))
+        if isinstance(policy, SelfPlayOpponent):
+            mask = self._legal_actions_mask_for(player_id)
+            action = policy.select_action(player_id)
+            if mask[action] != 1:
+                legal = np.nonzero(mask)[0]
+                action = int(legal[0]) if len(legal) > 0 else 0
+            estimate = action
+            cant_say = self._cant_say_value(player_id)
+            if cant_say is not None and estimate == cant_say:
+                legal = [idx for idx in range(self.estimation_action_count) if mask[idx] == 1]
+                estimate = legal[0] if legal else 0
+        else:
+            cant_say = self._cant_say_value(player_id)
+            estimate = policy.estimate(self.hands[player_id], self.config.hand_size, cant_say, self.np_random)
+            if cant_say is not None and estimate == cant_say:
+                alternatives = [v for v in range(self.config.hand_size + 1) if v != cant_say]
+                estimate = int(self.np_random.choice(alternatives))
         self.estimations[player_id] = estimate
         self._log_estimation(player_id, estimate)
         self.estimation_count += 1
@@ -286,11 +298,22 @@ class PlumpEnv(Env):
     def _auto_play(self, player_id: int):
         policy = self.opponents[player_id]
         assert policy is not None, "Missing policy for opponent"
-        legal = self._legal_cards(player_id)
-        ctx = TrickContext(lead_suit=self.lead_suit, trick_cards=tuple(self.trick_cards))
-        card = policy.play(self.hands[player_id], legal, ctx, self.np_random)
-        if card not in legal:
-            card = legal[0]
+        if isinstance(policy, SelfPlayOpponent):
+            mask = self._legal_actions_mask_for(player_id)
+            action = policy.select_action(player_id)
+            if mask[action] != 1:
+                legal = np.nonzero(mask)[0]
+                action = int(legal[0]) if len(legal) > 0 else self.estimation_action_count
+            card = action - self.estimation_action_count
+            if card < 0 or card not in self._legal_cards(player_id):
+                legal_cards = self._legal_cards(player_id)
+                card = legal_cards[0] if legal_cards else 0
+        else:
+            legal = self._legal_cards(player_id)
+            ctx = TrickContext(lead_suit=self.lead_suit, trick_cards=tuple(self.trick_cards))
+            card = policy.play(self.hands[player_id], legal, ctx, self.np_random)
+            if card not in legal:
+                card = legal[0]
         self._execute_card(player_id, card)
 
     def _start_play_phase(self):
