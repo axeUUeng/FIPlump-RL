@@ -36,6 +36,7 @@ class PlumpEnv(Env):
         seed: Optional[int] = None,
         record_history: Optional[bool] = None,
     ):
+        """Construct a new environment instance."""
         self.config = config or EnvConfig()
         assert self.config.num_players >= 2, "Need at least two players"
         assert (
@@ -70,9 +71,9 @@ class PlumpEnv(Env):
         self.np_random, _ = seeding.np_random(seed)
         self.opponents = self._build_opponents(opponents)
         for opponent in self.opponents:
-            attach = getattr(opponent, "attach_env", None)
-            if callable(attach):
-                attach(self)
+            binder = getattr(opponent, "bind", None)
+            if callable(binder):
+                binder(self)
 
         # Mutable state placeholders
         self.hands: List[List[int]] = []
@@ -272,7 +273,7 @@ class PlumpEnv(Env):
         policy = self.opponents[player_id]
         assert policy is not None, "Missing policy for opponent"
         if isinstance(policy, SelfPlayOpponent):
-            mask = self._legal_actions_mask_for(player_id)
+            mask = self.get_legal_actions_mask(player_id)
             action = policy.select_action(player_id)
             if mask[action] != 1:
                 legal = np.nonzero(mask)[0]
@@ -299,7 +300,7 @@ class PlumpEnv(Env):
         policy = self.opponents[player_id]
         assert policy is not None, "Missing policy for opponent"
         if isinstance(policy, SelfPlayOpponent):
-            mask = self._legal_actions_mask_for(player_id)
+            mask = self.get_legal_actions_mask(player_id)
             action = policy.select_action(player_id)
             if mask[action] != 1:
                 legal = np.nonzero(mask)[0]
@@ -406,6 +407,11 @@ class PlumpEnv(Env):
     def _get_observation(self):
         return self._make_observation(self.config.agent_id)
 
+    def get_player_observation(self, player_id: int) -> dict:
+        """Expose an observation dictionary for ``player_id``."""
+
+        return self._make_observation(player_id)
+
     def _make_observation(self, player_id: int) -> dict:
         return {
             "phase": 0 if self.phase == "estimation" else 1,
@@ -418,6 +424,11 @@ class PlumpEnv(Env):
             "tricks_played": np.int8(self.tricks_played),
             "cards_played": np.array(self.cards_played, dtype=np.int16),
         }
+
+    def get_legal_actions_mask(self, player_id: int) -> np.ndarray:
+        """Return a legal-action mask for ``player_id``."""
+
+        return self._legal_actions_mask_for(player_id)
 
     def _legal_actions_mask(self):
         return self._legal_actions_mask_for(self.config.agent_id)

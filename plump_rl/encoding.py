@@ -16,6 +16,13 @@ import numpy as np
 from .cards import DECK_SIZE
 
 
+class SupportsObservationConfig(Protocol):
+    """Subset of EnvConfig required for encoding helpers."""
+
+    num_players: int
+    hand_size: int
+
+
 @lru_cache(maxsize=1)
 def _card_embedding_matrix(rank_dims: int = 13, suit_dims: int = 4) -> np.ndarray:
     """Return a cached (52 x (rank_dims+suit_dims)) embedding matrix."""
@@ -102,8 +109,3 @@ def observation_dim(config: SupportsObservationConfig) -> int:
         "cards_played": np.zeros(0, dtype=np.int16),
     }
     return encode_observation(dummy_obs, config).shape[0]
-class SupportsObservationConfig(Protocol):
-    """Subset of EnvConfig required for encoding helpers."""
-
-    num_players: int
-    hand_size: int
