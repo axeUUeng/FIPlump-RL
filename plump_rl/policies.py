@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional, Sequence
+from typing import Callable, List, Optional, Sequence
 
 import numpy as np
 
@@ -212,3 +212,44 @@ class MiddleManager(_BaseHeuristic):
     @staticmethod
     def _suit_length(hand: List[int], suit: int) -> int:
         return sum(1 for card in hand if card_suit(card) == suit)
+
+
+class RandomLegalPolicy(BasePolicy):
+    """Baseline opponent that randomly estimates/plays while respecting legality."""
+
+    def estimate(self, hand: List[int], hand_size: int, cant_say: Optional[int], rng: np.random.Generator) -> int:
+        del hand
+        choices = list(range(hand_size + 1))
+        if cant_say is not None and cant_say in choices:
+            choices.remove(cant_say)
+        if not choices:
+            return 0
+        return int(rng.choice(choices))
+
+    def play(self, hand: List[int], legal_cards: List[int], ctx: TrickContext, rng: np.random.Generator) -> int:
+        lead = ctx.lead_suit
+        if lead != -1:
+            suited = [card for card in legal_cards if card_suit(card) == lead]
+        if suited:
+            legal_cards = suited
+        return int(rng.choice(legal_cards))
+
+
+class SelfPlayOpponent(BasePolicy):
+    """Adaptor that lets a learned `AgentPolicy` control non-agent seats."""
+
+    def __init__(self, agent_policy: Callable, name: str = "SelfPlay"):
+        self.agent_policy = agent_policy
+        self.name = name
+        self._env = None
+
+    def attach_env(self, env):
+        self._env = env
+
+    def select_action(self, player_id: int) -> int:
+        if self._env is None:
+            raise RuntimeError("SelfPlayOpponent must be attached to an environment.")
+        obs = self._env._make_observation(player_id)  # pylint: disable=protected-access
+        mask = self._env._legal_actions_mask_for(player_id)  # pylint: disable=protected-access
+        info = {"legal_actions": mask, "dealer": self._env.dealer_id, "phase": self._env.phase}
+        return int(self.agent_policy(obs, info, self._env))
