@@ -1,0 +1,23 @@
+    Documentation and Comments: It's essential to have clear and detailed documentation for your code. Add comments and docstrings to explain the purpose and usage of functions, classes, and methods. This will make it easier for you and others to understand and maintain the code.
+
+    Magic Numbers: Replace magic numbers with named constants or variables to make your code more readable and maintainable. For example, in various places where you have numbers like 10 or 14 (e.g., player.points += 10 + player.actual_sticks if player.estimate_sticks != 0 else 5), use named constants to make the code self-explanatory.
+
+    Use Enumerations for Suits and Ranks: Instead of hardcoding suit and rank names, consider using Python Enumerations. This will make the code more readable and less error-prone.
+
+    Separation of Concerns: Consider breaking your code into smaller, more focused functions. For example, the logic for dealing cards, estimating sticks, playing rounds, and calculating points could be organized into separate functions. This makes it easier to test and understand individual parts of the game.
+
+    Action and State Space: As you mentioned, you plan to train RL agents to play the game. It would be beneficial to define the state and action spaces early on. Consider how you will represent the state of the game, including the cards in each player's hand, the current round, and other relevant information. Think about the actions the RL agents can take, such as playing a card or estimating sticks. Define these spaces in a way that makes it easy to interface with RL libraries like OpenAI Gym.
+
+    Input and Output Handling: Think about how the game will interact with human players or RL agents. You mentioned inputting cards from a physical deck or having the program deal cards. Ensure that your code can handle these input methods gracefully.
+
+    Testing and Debugging: Develop a testing strategy to ensure that your game simulation works correctly. This is crucial, especially if you plan to train RL agents on this code. Use unit tests to verify the behavior of individual components.
+
+    Refactor Duplicate Code: In your estimation logic, you have duplicated code for random estimation and "Royal Count" estimation. Consider refactoring this to avoid redundancy.
+
+    Error Handling: Improve error handling by raising meaningful custom exceptions with descriptive error messages. This will help in diagnosing issues during gameplay.
+
+    Logging: Consider adding logging to your code to help with debugging and monitoring the game's progress.
+
+    Performance Optimization (if necessary): While the current code structure is clear and understandable, if you plan to simulate a large number of games or use this code for training RL agents, you might need to optimize certain parts of the code for performance.
+
+By addressing these points, you can make your code more robust and ready for future development, including training RL agents to play Plump.

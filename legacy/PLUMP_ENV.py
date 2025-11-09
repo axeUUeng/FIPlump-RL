@@ -4,7 +4,7 @@ import numpy as np
 import random
 from collections import defaultdict
 
-class CardDeck:
+class CardDeck():
     def __init__(self):
         # Initialize a standard deck of 52 cards
         suits = ['Hearts', 'Diamonds', 'Clubs', 'Spades']
