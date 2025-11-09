@@ -6,6 +6,7 @@ from .policies import (
     MiddleManager,
     RandomLegalPolicy,
     RuleBasedPolicy,
+    SelfPlayOpponent,
     ShortSuitAggressor,
     ZeroBidDodger,
 )
@@ -36,6 +37,7 @@ __all__ = [
     "ShortSuitAggressor",
     "MiddleManager",
     "RandomLegalPolicy",
+    "SelfPlayOpponent",
     "PolicyAggregate",
     "RoundResult",
     "TournamentBatchResult",
