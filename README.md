@@ -42,6 +42,7 @@ When flattened for DQN training, the state vector contains:
 | `tricks_won` | Tricks collected per player, normalized. |
 | `cards_remaining` | Cards left per player, normalized. |
 | `tricks_played` | Completed tricks in this round, normalized. |
+| `cards_played` | 52-length history mask of every card already seen in the round. |
 
 ### Action space
 Discrete with two segments:
@@ -94,17 +95,23 @@ for round_result in results:
 ## PyTorch DQN tooling
 ### Library API
 ```python
-from plump_rl import EnvConfig, DressedCardPolicy, train_dqn
+from plump_rl import EnvConfig, DressedCardPolicy, train_dqn, train_ppo
 
 opponents = [None, DressedCardPolicy(), DressedCardPolicy(), DressedCardPolicy()]
-result = train_dqn(
+dqn_result = train_dqn(
     num_episodes=500,
     config=EnvConfig(num_players=4, hand_size=10),
     opponents=opponents,
 )
-print("Last 50-episode avg:", sum(result.episode_rewards[-50:]) / 50)
+ppo_result = train_ppo(
+    num_episodes=500,
+    config=EnvConfig(num_players=4, hand_size=10),
+    opponents=opponents,
+)
+print("DQN last-50 avg:", sum(dqn_result.episode_rewards[-50:]) / 50)
+print("PPO last-50 avg:", sum(ppo_result.episode_rewards[-50:]) / 50)
 ```
-`train_dqn` returns all episode rewards plus the trained `DQNAgent`, so you can wrap it with `make_dqn_agent_policy(...)` and evaluate in tournaments.
+`train_dqn` returns all episode rewards plus the trained `DQNAgent`, so you can wrap it with `make_dqn_agent_policy(...)` and evaluate in tournaments. `train_ppo` supplies a policy/value model state that can be passed to `make_ppo_agent_policy(...)`.
 
 > Training episodes play a **single round** at the configured `hand_size`. To mimic the full 10→1→10 schedule, use `run_schedule(...)` or `simulate_random_tournaments(...)` for evaluation/validation.
 
@@ -115,10 +122,12 @@ python main.py --episodes 800 --num-players 4 --hand-size 10 --eval-tournaments 
 ```
 - `--episodes`: number of single-round training episodes at the chosen hand size.
 - `--num-players`, `--hand-size`, `--agent-id`: configure the environment layout.
+- `--algo`: choose between `dqn` and `ppo`.
 - `--random-opponent-prob`: probability that any opponent seat is controlled by `RandomLegalPolicy` (otherwise a heuristic policy is used).
 - `--save-model`: optional path for persisting the PyTorch policy network.
 - `--eval-tournaments`: how many 10→1→10 schedules to play after training.
 - `--record-games`: if set, writes every evaluation round (including trick history) to the given JSON file so you can replay specific games later.
+- `--self-play-checkpoints`: list of saved agent weights that can be sampled as self-play opponents; useful for progressive training.
 - All status messages go through Loguru, and `train_dqn` shows a tqdm bar by default.
 
 ---
@@ -128,4 +137,7 @@ python main.py --episodes 800 --num-players 4 --hand-size 10 --eval-tournaments 
 - `gymnasium`
 - `numpy`
 - `torch`
+- `torchvision`
+- `tqdm`
+- `loguru`
 - `loguru`
