@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 from gymnasium import Env, spaces
@@ -21,6 +21,7 @@ class EnvConfig:
     match_bonus: int = 10
     zero_bid_bonus: int = 5
     invalid_action_penalty: float = 5.0
+    record_history: bool = False
 
 
 class PlumpEnv(Env):
@@ -33,6 +34,7 @@ class PlumpEnv(Env):
         config: EnvConfig | None = None,
         opponents: Optional[Sequence[Optional[BasePolicy]]] = None,
         seed: Optional[int] = None,
+        record_history: Optional[bool] = None,
     ):
         self.config = config or EnvConfig()
         assert self.config.num_players >= 2, "Need at least two players"
@@ -40,6 +42,7 @@ class PlumpEnv(Env):
             self.config.hand_size * self.config.num_players <= DECK_SIZE
         ), "Not enough cards in deck for the requested hand size"
         assert 0 <= self.config.agent_id < self.config.num_players, "Invalid agent id"
+        self.record_history = self.config.record_history if record_history is None else record_history
 
         self.estimation_action_count = self.config.hand_size + 1
         self.action_space = spaces.Discrete(self.estimation_action_count + DECK_SIZE)
@@ -83,6 +86,9 @@ class PlumpEnv(Env):
         self.done: bool = False
         self.last_reward: float = 0.0
         self.final_points: Optional[List[int]] = None
+        self.round_counter: int = 0
+        self.current_round_log: Optional[Dict] = None
+        self.completed_round_logs: List[Dict] = []
 
     def _build_opponents(self, opponents: Optional[Sequence[Optional[BasePolicy]]]) -> List[Optional[BasePolicy]]:
         if opponents is None:
@@ -98,6 +104,68 @@ class PlumpEnv(Env):
             else:
                 built.append(policy or RuleBasedPolicy())
         return built
+
+    # Recording helpers -------------------------------------------------------
+    def _start_round_log(self):
+        if not self.record_history:
+            return
+        self.current_round_log = {
+            "round_index": self.round_counter,
+            "hand_size": self.config.hand_size,
+            "dealer": self.dealer_id,
+            "players": list(range(self.config.num_players)),
+            "estimations": [],
+            "plays": [],
+            "tricks": [],
+        }
+
+    def _log_estimation(self, player_id: int, estimate: int):
+        if not self.record_history or self.current_round_log is None:
+            return
+        self.current_round_log["estimations"].append(
+            {"player": player_id, "estimate": estimate}
+        )
+
+    def _log_card_play(self, player_id: int, card_id: int):
+        if not self.record_history or self.current_round_log is None:
+            return
+        self.current_round_log["plays"].append(
+            {
+                "player": player_id,
+                "card": card_id,
+                "card_str": card_to_str(card_id),
+                "trick_index": self.tricks_played,
+                "lead_suit": self.lead_suit if self.lead_suit != -1 else None,
+            }
+        )
+
+    def _log_trick_end(self, winner: int):
+        if not self.record_history or self.current_round_log is None:
+            return
+        cards_snapshot = [
+            {
+                "player": idx,
+                "card": card,
+                "card_str": card_to_str(card) if card != -1 else None,
+            }
+            for idx, card in enumerate(self.trick_cards)
+        ]
+        self.current_round_log["tricks"].append(
+            {
+                "trick_index": self.tricks_played,
+                "winner": winner,
+                "cards": cards_snapshot,
+            }
+        )
+
+    def _finalize_round_log(self):
+        if not self.record_history or self.current_round_log is None:
+            return
+        self.current_round_log["round_points"] = list(self.final_points or [])
+        self.current_round_log["tricks_won"] = list(self.tricks_won)
+        self.current_round_log["estimations_final"] = list(self.estimations)
+        self.completed_round_logs.append(self.current_round_log)
+        self.current_round_log = None
 
     # Gymnasium API -----------------------------------------------------------------
     def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None):
@@ -133,6 +201,9 @@ class PlumpEnv(Env):
 
     # Round helpers -----------------------------------------------------------------
     def _deal_new_round(self):
+        self.round_counter += 1
+        if self.record_history:
+            self._start_round_log()
         cards_needed = self.config.num_players * self.config.hand_size
         deck = np.arange(DECK_SIZE)
         self.np_random.shuffle(deck)
@@ -157,6 +228,8 @@ class PlumpEnv(Env):
         self.last_reward = 0.0
         self.final_points = None
         self.current_player = (self.dealer_id + 1) % self.config.num_players
+        if self.record_history and self.current_round_log is not None:
+            self.current_round_log["start_player"] = self.current_player
 
     def _handle_agent_estimation(self, action: int):
         if not 0 <= action <= self.config.hand_size:
@@ -167,6 +240,7 @@ class PlumpEnv(Env):
             return self._invalid_step(f"Estimation {action} violates cant-say rule ({cant_say}).")
 
         self.estimations[self.config.agent_id] = action
+        self._log_estimation(self.config.agent_id, action)
         self.estimation_count += 1
         self.current_player = (self.config.agent_id + 1) % self.config.num_players
         if self.estimation_count == self.config.num_players:
@@ -198,6 +272,7 @@ class PlumpEnv(Env):
             alternatives = [v for v in range(self.config.hand_size + 1) if v != cant_say]
             estimate = int(self.np_random.choice(alternatives))
         self.estimations[player_id] = estimate
+        self._log_estimation(player_id, estimate)
         self.estimation_count += 1
         self.current_player = (player_id + 1) % self.config.num_players
         if self.estimation_count == self.config.num_players:
@@ -229,6 +304,7 @@ class PlumpEnv(Env):
             self.lead_suit = card_suit(card_id)
             self.trick_leader = player_id
         self.trick_progress += 1
+        self._log_card_play(player_id, card_id)
 
         if self.trick_progress == self.config.num_players:
             winner = self._resolve_trick()
@@ -255,12 +331,14 @@ class PlumpEnv(Env):
             if rank > winning_rank:
                 winning_rank = rank
                 winner = pid
+        self._log_trick_end(winner)
         return winner
 
     def _finalize_round(self):
         self.done = True
         self.final_points = [self._score_player(pid) for pid in range(self.config.num_players)]
         self.last_reward = float(self.final_points[self.config.agent_id])
+        self._finalize_round_log()
 
     def _score_player(self, player_id: int) -> int:
         est = self.estimations[player_id]

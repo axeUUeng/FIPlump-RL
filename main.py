@@ -1,10 +1,11 @@
 import argparse
+import json
 from pathlib import Path
 from typing import List, Optional
 
 import numpy as np
 import torch
-from tqdm import tqdm
+from loguru import logger
 
 from plump_rl import (
     DressedCardPolicy,
@@ -12,7 +13,10 @@ from plump_rl import (
     MiddleManager,
     ShortSuitAggressor,
     ZeroBidDodger,
+    RoundResult,
+    format_round_history,
     make_dqn_agent_policy,
+    round_results_to_dict,
     run_schedule,
     train_dqn,
 )
@@ -35,23 +39,31 @@ def build_opponents(config: EnvConfig, rng: Optional[np.random.Generator] = None
     return opponents
 
 
-def evaluate_agent(agent_fn, config: EnvConfig, tournaments: int, seed: Optional[int]):
+def evaluate_agent(agent_fn, config: EnvConfig, tournaments: int, seed: Optional[int], record_games: bool = False):
     rng = np.random.default_rng(seed)
     totals: List[float] = []
+    seat_assignments: List[List[str]] = []
+    tournament_rounds: List[List[RoundResult]] = []
     for t in range(tournaments):
         opponents = build_opponents(config, rng)
+        seat_assignments.append(
+            ["Agent" if idx == config.agent_id else opp.__class__.__name__ for idx, opp in enumerate(opponents)]
+        )
         rounds = run_schedule(
             agent=agent_fn,
             base_config=config,
             opponents=opponents,
             seed=None if seed is None else int(seed + t),
+            record_games=record_games,
         )
         total = 0.0
         for round_result in rounds:
             points = round_result.round_points or [0] * config.num_players
             total += points[config.agent_id]
         totals.append(total)
-    return totals
+        if record_games:
+            tournament_rounds.append(rounds)
+    return totals, seat_assignments, tournament_rounds
 
 
 def main():

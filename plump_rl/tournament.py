@@ -7,6 +7,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from .cards import card_to_str
 from .env import EnvConfig, PlumpEnv
 from .policies import BasePolicy, TrickContext
 
@@ -19,6 +20,40 @@ class RoundResult:
     reward: float
     round_points: Optional[List[int]]
     info: dict
+    history: Optional[dict] = None
+
+
+def format_round_history(history: Optional[dict], player_labels: Optional[Sequence[str]] = None) -> str:
+    if history is None:
+        return "No history recorded."
+    num_players = len(history.get("players", []))
+    if player_labels is None:
+        player_labels = [f"P{i}" for i in range(num_players)]
+    lines = [
+        f"Round {history.get('round_index', '?')} | hand_size={history.get('hand_size')}",
+        f"Dealer: {player_labels[history.get('dealer', 0)] if history.get('dealer') is not None else '?'}",
+    ]
+    lines.append("Estimations:")
+    for entry in history.get("estimations", []):
+        pid = entry["player"]
+        lines.append(f"  {player_labels[pid]} -> {entry['estimate']}")
+
+    lines.append("Tricks:")
+    for trick in history.get("tricks", []):
+        winner = trick.get("winner")
+        lines.append(f"  Trick {trick.get('trick_index')} winner={player_labels[winner] if winner is not None else '?'}")
+        for card in trick.get("cards", []):
+            card_id = card.get("card")
+            if card_id is None or card_id == -1:
+                continue
+            lines.append(f"    {player_labels[card['player']]} played {card_to_str(card_id)}")
+
+    points = history.get("round_points")
+    if points is not None:
+        lines.append("Round points:")
+        for idx, val in enumerate(points):
+            lines.append(f"  {player_labels[idx]}: {val}")
+    return "\n".join(lines)
 
 
 def default_schedule(max_hand_size: int = 10, min_hand_size: int = 1) -> List[int]:
@@ -87,6 +122,7 @@ def run_schedule(
     base_config: Optional[EnvConfig] = None,
     opponents: Optional[Sequence[Optional[BasePolicy]]] = None,
     seed: Optional[int] = None,
+    record_games: bool = False,
 ) -> List[RoundResult]:
     """Play a series of Plump rounds with varying hand sizes."""
     base_config = base_config or EnvConfig()
@@ -104,7 +140,7 @@ def run_schedule(
             invalid_action_penalty=base_config.invalid_action_penalty,
         )
         env_seed = None if seed is None else int(seed + idx)
-        env = PlumpEnv(cfg, opponents=opponents, seed=env_seed)
+        env = PlumpEnv(cfg, opponents=opponents, seed=env_seed, record_history=record_games)
         obs, info = env.reset()
         done = False
         reward_acc = 0.0
@@ -120,7 +156,10 @@ def run_schedule(
             obs, reward, terminated, truncated, info = env.step(action)
             reward_acc += reward
             done = terminated or truncated
-        results.append(RoundResult(hand_size, reward_acc, info.get("round_points"), info))
+        history = None
+        if record_games and getattr(env, "completed_round_logs", None):
+            history = env.completed_round_logs[-1]
+        results.append(RoundResult(hand_size, reward_acc, info.get("round_points"), info, history))
     return results
 
 
@@ -140,6 +179,7 @@ class PolicyAggregate:
 class TournamentBatchResult:
     policy_stats: Dict[str, PolicyAggregate]
     seat_history: List[List[str]]
+    rounds: Optional[List[List[RoundResult]]] = None
 
 
 def simulate_random_tournaments(
@@ -149,6 +189,7 @@ def simulate_random_tournaments(
     base_config: Optional[EnvConfig] = None,
     schedule: Optional[Iterable[int]] = None,
     seed: Optional[int] = None,
+    record_games: bool = False,
 ) -> TournamentBatchResult:
     """Run multiple tournaments with random heuristic assignments per seat."""
 
@@ -161,6 +202,7 @@ def simulate_random_tournaments(
     rng = np.random.default_rng(seed)
     stats: Dict[str, PolicyAggregate] = {}
     seat_history: List[List[str]] = []
+    tournament_rounds: List[List[RoundResult]] = []
 
     for tournament_idx in range(num_tournaments):
         seat_assignments: List[Tuple[BasePolicy, str]] = []
@@ -182,7 +224,10 @@ def simulate_random_tournaments(
             opponents=opponents,
             schedule=schedule,
             seed=None if seed is None else int(seed + tournament_idx),
+            record_games=record_games,
         )
+        if record_games:
+            tournament_rounds.append(results)
 
         totals = [0.0] * base_config.num_players
         for round_result in results:
@@ -201,4 +246,5 @@ def simulate_random_tournaments(
             if total == max_total:
                 entry.tournament_wins += 1
 
-    return TournamentBatchResult(policy_stats=stats, seat_history=seat_history)
+    rounds_payload = tournament_rounds if record_games else None
+    return TournamentBatchResult(policy_stats=stats, seat_history=seat_history, rounds=rounds_payload)

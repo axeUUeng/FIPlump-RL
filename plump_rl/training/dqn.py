@@ -11,6 +11,8 @@ import torch.nn as nn
 import torch.optim as optim
 from tqdm import tqdm
 
+from loguru import logger
+
 from ..env import EnvConfig, PlumpEnv
 from ..policies import BasePolicy
 
@@ -272,13 +274,14 @@ def train_dqn(
         episode_rewards.append(total_reward)
         if not show_progress and (episode + 1) % 50 == 0:
             avg = np.mean(episode_rewards[-50:])
-            print(f"[Episode {episode + 1}] avg_reward (last 50): {avg:.2f}")
+            logger.info("[Episode {}] avg_reward (last 50): {:.2f}", episode + 1, avg)
 
     if not show_progress:
         stats = agent.stats()
-        print(
-            f"Illegal argmax rate: {stats['illegal_argmax_rate']:.3f} "
-            f"| mean |Q|: {stats['mean_abs_q']:.3f}"
+        logger.info(
+            "Illegal argmax rate: {:.3f} | mean |Q|: {:.3f}",
+            stats["illegal_argmax_rate"],
+            stats["mean_abs_q"],
         )
 
     return TrainingResult(episode_rewards=episode_rewards, config=env_config, agent=agent)

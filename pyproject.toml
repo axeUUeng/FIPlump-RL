@@ -10,4 +10,5 @@ dependencies = [
     "torch>=2.4.1",
     "torchvision>=0.24.0",
     "tqdm>=4.66.5",
+    "loguru>=0.7.2",
 ]
