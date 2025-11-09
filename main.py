@@ -12,6 +12,7 @@ from plump_rl import (
     EnvConfig,
     MiddleManager,
     RandomLegalPolicy,
+    SelfPlayOpponent,
     ShortSuitAggressor,
     ZeroBidDodger,
     RoundResult,
@@ -24,7 +25,7 @@ from plump_rl import (
     train_ppo,
 )
 
-POLICY_POOL = [DressedCardPolicy, ShortSuitAggressor, MiddleManager, ZeroBidDodger]
+POLICY_POOL = [DressedCardPolicy, ShortSuitAggressor, MiddleManager, ZeroBidDodger, RandomLegalPolicy]
 
 
 def build_opponents(
@@ -49,8 +50,8 @@ def build_opponents(
             opponents.append(RandomLegalPolicy())
             continue
         if checkpoint_policies:
-            policy = rng.choice(checkpoint_policies) if rng else checkpoint_policies[idx % len(checkpoint_policies)]
-            opponents.append(policy)
+            agent_fn = rng.choice(checkpoint_policies) if rng else checkpoint_policies[idx % len(checkpoint_policies)]
+            opponents.append(SelfPlayOpponent(agent_fn))
             continue
         if rng is None:
             policy_cls = POLICY_POOL[(idx - 1) % len(POLICY_POOL)]
