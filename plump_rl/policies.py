@@ -1,4 +1,4 @@
-"""Simple opponent policies for Plump RL."""
+"""Opponent policies used inside the Plump RL environment."""
 
 from __future__ import annotations
 
@@ -12,47 +12,53 @@ from .cards import card_rank, card_suit
 
 @dataclass
 class TrickContext:
+    """Public information about the current trick."""
+
     lead_suit: int
     trick_cards: Sequence[int]
 
 
 class BasePolicy:
-    """Interface for opponents used in the environment."""
+    """Interface all handcrafted opponents implement."""
 
     def estimate(self, hand: List[int], hand_size: int, cant_say: Optional[int], rng: np.random.Generator) -> int:
+        """Return the number of tricks this policy expects to win."""
+
         raise NotImplementedError
 
     def play(self, hand: List[int], legal_cards: List[int], ctx: TrickContext, rng: np.random.Generator) -> int:
+        """Return the card ID to play given the legal options."""
+
         raise NotImplementedError
 
 
 class RuleBasedPolicy(BasePolicy):
-    """Heuristic opponent that plays conservatively."""
+    """Baseline opponent that bids high-card counts and plays conservatively."""
 
     def __init__(self, aggressive: bool = False):
         self.aggressive = aggressive
 
     def estimate(self, hand: List[int], hand_size: int, cant_say: Optional[int], rng: np.random.Generator) -> int:
-        # Count strong cards as a proxy for trick potential.
-        high_cards = sum(1 for c in hand if card_rank(c) >= 11)
-        trumps = sum(1 for c in hand if card_rank(c) >= 13)
-        base = min(hand_size, max(0, high_cards + (1 if self.aggressive else 0)))
-        if trumps == 0 and base > 0:
-            base -= 1
-        # Ensure estimate complies with cant_say.
-        if cant_say is not None and base == cant_say:
-            options = [e for e in range(hand_size + 1) if e != cant_say]
-            base = int(rng.choice(options))
-        return base
+        """Count high cards as a proxy for trick potential."""
+
+        high_cards = sum(1 for card in hand if card_rank(card) >= 11)
+        winning_cards = sum(1 for card in hand if card_rank(card) >= 13)
+        bid = min(hand_size, max(0, high_cards + (1 if self.aggressive else 0)))
+        if winning_cards == 0 and bid > 0:
+            bid -= 1
+        if cant_say is not None and bid == cant_say:
+            choices = [value for value in range(hand_size + 1) if value != cant_say]
+            bid = int(rng.choice(choices))
+        return bid
 
     def play(self, hand: List[int], legal_cards: List[int], ctx: TrickContext, rng: np.random.Generator) -> int:
-        # Prefer following suit with the lowest card; otherwise discard lowest overall.
+        # Prefer following suit with the lowest (or highest) legal card.
         lead = ctx.lead_suit
         if lead != -1:
             suited = [card for card in legal_cards if card_suit(card) == lead]
             if suited:
                 legal_cards = suited
-        key_fn = (lambda cid: (-card_rank(cid))) if self.aggressive else (lambda cid: card_rank(cid))
+        key_fn = (lambda cid: -card_rank(cid)) if self.aggressive else card_rank
         return min(legal_cards, key=key_fn)
 
 
