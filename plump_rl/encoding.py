@@ -9,7 +9,7 @@ contextual scalars such as bids or tricks won.
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Iterable, Sequence
+from typing import Iterable, Mapping, Protocol, Sequence
 
 import numpy as np
 
@@ -49,7 +49,7 @@ def encode_current_trick(trick: Sequence[int], num_players: int) -> np.ndarray:
     return encoded.reshape(-1)
 
 
-def encode_observation(obs: dict, config) -> np.ndarray:
+def encode_observation(obs: Mapping[str, np.ndarray], config: SupportsObservationConfig) -> np.ndarray:
     """Encode a raw `PlumpEnv` observation into a flat feature vector."""
 
     hand_cards = np.nonzero(obs["hand"])[0]
@@ -87,7 +87,7 @@ def encode_observation(obs: dict, config) -> np.ndarray:
     )
 
 
-def observation_dim(config) -> int:
+def observation_dim(config: SupportsObservationConfig) -> int:
     """Return the length of the encoded observation vector for ``config``."""
 
     dummy_obs = {
@@ -102,3 +102,8 @@ def observation_dim(config) -> int:
         "cards_played": np.zeros(0, dtype=np.int16),
     }
     return encode_observation(dummy_obs, config).shape[0]
+class SupportsObservationConfig(Protocol):
+    """Subset of EnvConfig required for encoding helpers."""
+
+    num_players: int
+    hand_size: int
