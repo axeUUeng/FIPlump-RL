@@ -67,6 +67,7 @@ Every heuristic extends `BasePolicy` with `estimate()` and `play()`:
 | `ZeroBidDodger` | Always bids 0 (unless cant-say forces 1) and aggressively loses tricks. |
 | `ShortSuitAggressor` | Bids on the number of short suits (≤2 cards) and tries to void suits quickly. |
 | `MiddleManager` | Values mid ranks (7–10) and tries to maintain suit control with balanced play. |
+| `RandomLegalPolicy` | Samples bids and cards uniformly from the legal set; good chaotic opponent baseline. |
 
 Plug them into the environment via the `opponents` argument or use them as baselines in tournaments.
 
@@ -78,12 +79,15 @@ Plug them into the environment via the `opponents` argument or use them as basel
 
 Example:
 ```python
-from plump_rl import EnvConfig, DressedCardPolicy, run_schedule
+from plump_rl import EnvConfig, DressedCardPolicy, run_schedule, format_round_history
 
 opponents = [None, DressedCardPolicy(), DressedCardPolicy(), DressedCardPolicy()]
-results = run_schedule(agent=None, base_config=EnvConfig(hand_size=10), opponents=opponents)
+results = run_schedule(agent=None, base_config=EnvConfig(hand_size=10), opponents=opponents, record_games=True)
+for round_result in results:
+    if round_result.history:
+        print(format_round_history(round_result.history))
 ```
-(Provide an `agent` callable to control the learning seat; omit it to auto-play with the provided opponents.)
+(Provide an `agent` callable to control the learning seat; omit it to auto-play with the provided opponents. Use `record_games=True` to capture trick-by-trick histories.)
 
 ---
 
@@ -102,13 +106,20 @@ print("Last 50-episode avg:", sum(result.episode_rewards[-50:]) / 50)
 ```
 `train_dqn` returns all episode rewards plus the trained `DQNAgent`, so you can wrap it with `make_dqn_agent_policy(...)` and evaluate in tournaments.
 
+> Training episodes play a **single round** at the configured `hand_size`. To mimic the full 10→1→10 schedule, use `run_schedule(...)` or `simulate_random_tournaments(...)` for evaluation/validation.
+
 ### CLI script
 ```
-python main.py --episodes 800 --num-players 4 --hand-size 10 --eval-tournaments 30 --save-model checkpoints/dqn.pt
+python main.py --episodes 800 --num-players 4 --hand-size 10 --eval-tournaments 30 \
+  --save-model checkpoints/dqn.pt --record-games eval_log.json
 ```
-- Trains against a rotating roster of heuristics.
-- Optionally saves the PyTorch policy network.
-- Runs multiple evaluation tournaments and prints per-tournament totals plus mean ± std.
+- `--episodes`: number of single-round training episodes at the chosen hand size.
+- `--num-players`, `--hand-size`, `--agent-id`: configure the environment layout.
+- `--random-opponent-prob`: probability that any opponent seat is controlled by `RandomLegalPolicy` (otherwise a heuristic policy is used).
+- `--save-model`: optional path for persisting the PyTorch policy network.
+- `--eval-tournaments`: how many 10→1→10 schedules to play after training.
+- `--record-games`: if set, writes every evaluation round (including trick history) to the given JSON file so you can replay specific games later.
+- All status messages go through Loguru, and `train_dqn` shows a tqdm bar by default.
 
 ---
 
@@ -117,3 +128,4 @@ python main.py --episodes 800 --num-players 4 --hand-size 10 --eval-tournaments 
 - `gymnasium`
 - `numpy`
 - `torch`
+- `loguru`
