@@ -19,6 +19,7 @@ class EnvConfig:
     hand_size: int = 10
     agent_id: int = 0
     match_bonus: int = 10
+    zero_bid_bonus: int = 5
     invalid_action_penalty: float = 5.0
 
 
@@ -265,6 +266,8 @@ class PlumpEnv(Env):
         est = self.estimations[player_id]
         actual = self.tricks_won[player_id]
         if est == actual:
+            if actual == 0:
+                return self.config.zero_bid_bonus
             return self.config.match_bonus + actual
         return 0
 

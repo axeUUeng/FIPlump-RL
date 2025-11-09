@@ -10,7 +10,7 @@ from .tournament import (
     run_schedule,
     simulate_random_tournaments,
 )
-from .training.dqn import TrainingResult, train_dqn
+from .training.dqn import TrainingResult, make_dqn_agent_policy, train_dqn
 
 __all__ = [
     "PlumpEnv",
@@ -28,4 +28,5 @@ __all__ = [
     "simulate_random_tournaments",
     "train_dqn",
     "TrainingResult",
+    "make_dqn_agent_policy",
 ]

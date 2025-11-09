@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple
+from typing import Callable, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from tqdm import tqdm
 
 from ..env import EnvConfig, PlumpEnv
 from ..policies import BasePolicy
+
+AgentFn = Callable[[dict, dict, PlumpEnv], int]
 
 
 def _flatten_observation(obs: dict, config: EnvConfig) -> np.ndarray:
@@ -42,31 +45,56 @@ def _obs_size(config: EnvConfig) -> int:
     return len(_flatten_observation(dummy_obs, config))
 
 
-class QNetwork(nn.Module):
-    def __init__(self, input_dim: int, output_dim: int, hidden_dim: int = 256):
+class DuelingQNetwork(nn.Module):
+    def __init__(self, input_dim: int, output_dim: int, hidden_dim: int = 512):
         super().__init__()
-        self.net = nn.Sequential(
+        self.backbone = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
-            nn.ReLU(),
+            nn.LayerNorm(hidden_dim),
+            nn.SiLU(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
+            nn.LayerNorm(hidden_dim),
+            nn.SiLU(),
+        )
+        self.value_head = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, 1),
+        )
+        self.adv_head = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.SiLU(),
             nn.Linear(hidden_dim, output_dim),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
+        h = self.backbone(x)
+        value = self.value_head(h)
+        adv = self.adv_head(h)
+        return value + adv - adv.mean(dim=1, keepdim=True)
 
 
 @dataclass
 class ReplayBuffer:
     capacity: int
+    reward_clip: Optional[float] = 1.0
 
     def __post_init__(self):
-        self.buffer: List[Tuple[np.ndarray, int, float, np.ndarray, bool]] = []
+        self.buffer: List[Tuple[np.ndarray, int, float, np.ndarray, bool, np.ndarray]] = []
         self.position = 0
 
-    def push(self, state: np.ndarray, action: int, reward: float, next_state: np.ndarray, done: bool):
-        experience = (state, action, reward, next_state, done)
+    def push(
+        self,
+        state: np.ndarray,
+        action: int,
+        reward: float,
+        next_state: np.ndarray,
+        done: bool,
+        next_legal_mask: np.ndarray,
+    ):
+        if self.reward_clip is not None:
+            reward = float(np.clip(reward, -self.reward_clip, self.reward_clip))
+        experience = (state, action, reward, next_state, done, next_legal_mask.astype(np.uint8))
         if len(self.buffer) < self.capacity:
             self.buffer.append(experience)
         else:
@@ -76,13 +104,14 @@ class ReplayBuffer:
     def sample(self, batch_size: int):
         idx = np.random.choice(len(self.buffer), batch_size, replace=False)
         batch = [self.buffer[i] for i in idx]
-        states, actions, rewards, next_states, dones = zip(*batch)
+        states, actions, rewards, next_states, dones, next_masks = zip(*batch)
         return (
             np.stack(states),
             np.array(actions),
             np.array(rewards, dtype=np.float32),
             np.stack(next_states),
             np.array(dones, dtype=np.float32),
+            np.stack(next_masks),
         )
 
     def __len__(self):
@@ -103,16 +132,35 @@ class DQNAgent:
         device: Optional[torch.device] = None,
     ):
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.policy_net = QNetwork(state_dim, action_dim).to(self.device)
-        self.target_net = QNetwork(state_dim, action_dim).to(self.device)
+        self.policy_net = DuelingQNetwork(state_dim, action_dim).to(self.device)
+        self.target_net = DuelingQNetwork(state_dim, action_dim).to(self.device)
         self.target_net.load_state_dict(self.policy_net.state_dict())
-        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr)
+        self.optimizer = optim.AdamW(self.policy_net.parameters(), lr=lr, weight_decay=1e-4)
         self.gamma = gamma
         self.epsilon_start = epsilon_start
         self.epsilon_end = epsilon_end
         self.epsilon_decay = epsilon_decay
         self.step_count = 0
         self.target_update_interval = target_update_interval
+        self.illegal_argmax = 0
+        self.greedy_calls = 0
+        self.q_abs_running = 0.0
+        self.q_abs_updates = 0
+
+    def _greedy_action(self, state: np.ndarray, legal_mask: np.ndarray) -> int:
+        legal_indices = np.nonzero(legal_mask)[0]
+        if len(legal_indices) == 0:
+            raise RuntimeError("No legal actions available.")
+        state_tensor = torch.from_numpy(state).float().unsqueeze(0).to(self.device)
+        with torch.no_grad():
+            q_values = self.policy_net(state_tensor).cpu().numpy()[0]
+        masked_q = np.full_like(q_values, -1e9)
+        masked_q[legal_indices] = q_values[legal_indices]
+        greedy_action = int(np.argmax(q_values))
+        if greedy_action not in legal_indices:
+            self.illegal_argmax += 1
+        self.greedy_calls += 1
+        return int(np.argmax(masked_q))
 
     def select_action(self, state: np.ndarray, legal_mask: np.ndarray) -> int:
         epsilon = self.epsilon_end + (self.epsilon_start - self.epsilon_end) * np.exp(
@@ -125,31 +173,33 @@ class DQNAgent:
 
         if np.random.rand() < epsilon:
             return int(np.random.choice(legal_indices))
+        return self._greedy_action(state, legal_mask)
 
-        state_tensor = torch.from_numpy(state).float().unsqueeze(0).to(self.device)
-        with torch.no_grad():
-            q_values = self.policy_net(state_tensor).cpu().numpy()[0]
-        masked_q = np.full_like(q_values, -1e9)
-        masked_q[legal_indices] = q_values[legal_indices]
-        return int(np.argmax(masked_q))
+    def act_greedy(self, state: np.ndarray, legal_mask: np.ndarray) -> int:
+        return self._greedy_action(state, legal_mask)
 
     def update(self, buffer: ReplayBuffer, batch_size: int):
         if len(buffer) < batch_size:
             return
-        states, actions, rewards, next_states, dones = buffer.sample(batch_size)
+        states, actions, rewards, next_states, dones, next_masks = buffer.sample(batch_size)
         states_tensor = torch.from_numpy(states).float().to(self.device)
         actions_tensor = torch.from_numpy(actions).long().to(self.device)
         rewards_tensor = torch.from_numpy(rewards).float().to(self.device)
         next_states_tensor = torch.from_numpy(next_states).float().to(self.device)
         dones_tensor = torch.from_numpy(dones).float().to(self.device)
+        next_masks_tensor = torch.from_numpy(next_masks).bool().to(self.device)
 
         q_values = self.policy_net(states_tensor).gather(1, actions_tensor.unsqueeze(1)).squeeze(1)
 
         with torch.no_grad():
-            next_q = self.target_net(next_states_tensor).max(1)[0]
-            targets = rewards_tensor + self.gamma * (1 - dones_tensor) * next_q
-
-        loss = nn.functional.mse_loss(q_values, targets)
+            next_q_policy = self.policy_net(next_states_tensor)
+            next_q_policy[~next_masks_tensor] = -1e9
+            next_actions = next_q_policy.argmax(dim=1, keepdim=True)
+            next_q_target = self.target_net(next_states_tensor).gather(1, next_actions).squeeze(1)
+            targets = rewards_tensor + self.gamma * (1 - dones_tensor) * next_q_target
+        self.q_abs_running += q_values.detach().abs().mean().item()
+        self.q_abs_updates += 1
+        loss = nn.functional.smooth_l1_loss(q_values, targets)
         self.optimizer.zero_grad()
         loss.backward()
         nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=1.0)
@@ -158,11 +208,20 @@ class DQNAgent:
         if self.step_count % self.target_update_interval == 0:
             self.target_net.load_state_dict(self.policy_net.state_dict())
 
+    def stats(self) -> dict:
+        calls = max(1, self.greedy_calls)
+        abs_updates = max(1, self.q_abs_updates)
+        return {
+            "illegal_argmax_rate": self.illegal_argmax / calls,
+            "mean_abs_q": self.q_abs_running / abs_updates,
+        }
+
 
 @dataclass
 class TrainingResult:
     episode_rewards: List[float]
     config: EnvConfig
+    agent: DQNAgent
 
 
 def train_dqn(
@@ -174,6 +233,7 @@ def train_dqn(
     replay_capacity: int = 50_000,
     batch_size: int = 64,
     warmup_steps: int = 500,
+    show_progress: bool = False,
 ) -> TrainingResult:
     """Train a DQN agent directly on PlumpEnv using PyTorch."""
 
@@ -185,7 +245,13 @@ def train_dqn(
     buffer = ReplayBuffer(replay_capacity)
     episode_rewards: List[float] = []
 
-    for episode in range(num_episodes):
+    iterator: Iterable[int]
+    if show_progress:
+        iterator = tqdm(range(num_episodes), desc="Training", unit="episode")
+    else:
+        iterator = range(num_episodes)
+
+    for episode in iterator:
         obs, info = env.reset()
         state = _flatten_observation(obs, env_config)
         done = False
@@ -196,7 +262,7 @@ def train_dqn(
             next_obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
             next_state = _flatten_observation(next_obs, env_config)
-            buffer.push(state, action, reward, next_state, done)
+            buffer.push(state, action, reward, next_state, done, info["legal_actions"])
             state = next_state
             total_reward += reward
 
@@ -204,8 +270,26 @@ def train_dqn(
                 agent.update(buffer, batch_size)
 
         episode_rewards.append(total_reward)
-        if (episode + 1) % 50 == 0:
+        if not show_progress and (episode + 1) % 50 == 0:
             avg = np.mean(episode_rewards[-50:])
             print(f"[Episode {episode + 1}] avg_reward (last 50): {avg:.2f}")
 
-    return TrainingResult(episode_rewards=episode_rewards, config=env_config)
+    if not show_progress:
+        stats = agent.stats()
+        print(
+            f"Illegal argmax rate: {stats['illegal_argmax_rate']:.3f} "
+            f"| mean |Q|: {stats['mean_abs_q']:.3f}"
+        )
+
+    return TrainingResult(episode_rewards=episode_rewards, config=env_config, agent=agent)
+
+
+def make_dqn_agent_policy(agent: DQNAgent, config: EnvConfig) -> AgentFn:
+    """Wrap a trained agent so it can be passed into tournament helpers."""
+
+    def _policy(obs: dict, info: dict, env: PlumpEnv) -> int:
+        del env
+        state = _flatten_observation(obs, config)
+        return agent.act_greedy(state, info["legal_actions"])
+
+    return _policy

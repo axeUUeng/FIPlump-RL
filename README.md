@@ -1,85 +1,118 @@
 # FIPlump-RL
-Fédération Internationale de Plump presents RL in the card game Plump.
+Gymnasium-compatible tooling for training reinforcement-learning agents to play the Swedish trick-taking game **Plump**.
+
+---
 
 ## Project layout
-- `plump_rl/`: Gymnasium-compatible environment, opponent policies, tournament helpers, and card utilities for training agents.
-- `plump.ipynb` / `PLUMP_RL.ipynb`: notebooks used for experimenting with heuristics and RL agents.
-- `legacy/`: the original card/hand/player utilities (Hearts env, early Plump drafts, notebooks, etc.) preserved for reference.
+- `plump_rl/`: production code – environment, card utilities, heuristic opponents, tournament simulators, and PyTorch trainers.
+- `plump.ipynb`, `PLUMP_RL.ipynb`: scratchpads for experiments and visualizations.
+- `legacy/`: the “code museum” containing the original card utilities, Hearts env, and early Plump drafts (kept for reference only).
 
-## Using the new environment
+---
+
+## Game rules (house variant)
+1. **Deck / players** – standard 52-card deck, 3–5 players (configurable). Each round deals the same number of cards to every player.
+2. **Round schedule** – common tournament pattern is 10 cards down to 1, then back up to 10 (implemented via `default_schedule` / `run_schedule`).
+3. **Estimation phase** – starting left of the dealer and ending with the dealer, each player estimates how many tricks they will win. The dealer must avoid the “cant-say” value that would make the sum of estimates equal the number of tricks in that round.
+4. **Trick play** – highest card of the led suit wins (no trump). Players must follow suit if possible; otherwise they may discard any card. Trick winners lead next.
+5. **Scoring** – when a player’s actual tricks match their estimate they receive `match_bonus + tricks_won` points (default 10 + tricks). A successful zero bid pays a flat `zero_bid_bonus` (default 5). Otherwise they score `0`. Invalid actions (e.g., bidding the cant-say number) terminate the episode with a small negative reward (default -5).
+
+---
+
+## Environment interface
 ```python
 import numpy as np
-from plump_rl import PlumpEnv
+from plump_rl import PlumpEnv, EnvConfig
 
-env = PlumpEnv()
+env = PlumpEnv(EnvConfig(num_players=4, hand_size=10))
 obs, info = env.reset()
-done = False
-while not done:
-    legal = np.nonzero(info["legal_actions"])[0]
-    action = int(np.random.choice(legal))
-    obs, reward, terminated, truncated, info = env.step(action)
-    done = terminated or truncated
+legal = np.nonzero(info["legal_actions"])[0]
 ```
 
-Observations expose the agent hand, public trick state, estimations, and meta data such as `phase`. The action space has two segments:
+### Observations
+When flattened for DQN training, the state vector contains:
 
-1. `0..hand_size` for estimation phase (cant-say rule enforced for the dealer).
-2. `hand_size+1..hand_size+52` for selecting a specific card (offset + card id 0-51).
+| Component | Description |
+|-----------|-------------|
+| `phase` | 0 (estimation) or 1 (play). |
+| `hand` | 52-length binary mask of the agent’s cards. |
+| `current_trick` | Card IDs (0–51, normalized) for each seat this trick; `-1` if empty. |
+| `lead_suit` | Suit index (0–3) or 4 for “no suit yet”. |
+| `estimations` | Current bids per player, normalized by hand size. |
+| `tricks_won` | Tricks collected per player, normalized. |
+| `cards_remaining` | Cards left per player, normalized. |
+| `tricks_played` | Completed tricks in this round, normalized. |
 
-`info["legal_actions"]` masks the invalid entries so common RL libraries can respect turn-specific constraints.
+### Action space
+Discrete with two segments:
+1. `0 .. hand_size` – estimation choices (dealer’s cant-say rule enforced automatically).
+2. `hand_size+1 .. hand_size+52` – play phase: select a card by ID (`action - (hand_size+1)`).
 
-Scoring currently awards `match_bonus + tricks_won` when a player hits their estimate and `0` otherwise, mirroring the house rules described.
+`info["legal_actions"]` provides a binary mask over the entire action space so you can zero logits for invalid moves.
 
-### Tournament helpers
-To simulate the classic schedule (10 → 1 → 10) without manually reconfiguring the environment each round:
+### Rewards
+- Intermediate steps return `0`.
+- End-of-round reward equals the scoring rule above.
+- Illegal actions end the episode with `-invalid_action_penalty` (default `-5`).
+
+---
+
+## Heuristic opponents
+Every heuristic extends `BasePolicy` with `estimate()` and `play()`:
+
+| Policy | Behaviour summary |
+|--------|-------------------|
+| `RuleBasedPolicy` | Bids using high-card counts, plays conservatively (low when following suit). |
+| `DressedCardPolicy` | Counts face cards (“klädda”) for bids, leads high face cards, dumps low off-suit cards. |
+| `ZeroBidDodger` | Always bids 0 (unless cant-say forces 1) and aggressively loses tricks. |
+| `ShortSuitAggressor` | Bids on the number of short suits (≤2 cards) and tries to void suits quickly. |
+| `MiddleManager` | Values mid ranks (7–10) and tries to maintain suit control with balanced play. |
+
+Plug them into the environment via the `opponents` argument or use them as baselines in tournaments.
+
+---
+
+## Tournament helpers
+- `run_schedule(...)` – plays a full hand-size schedule (default 10→1→10) for a single agent policy and returns per-round results.
+- `simulate_random_tournaments(...)` – runs many tournaments with random heuristic assignments per seat and aggregates stats (average points, wins, seat counts).
+
+Example:
 ```python
-from plump_rl import EnvConfig, run_schedule
+from plump_rl import EnvConfig, DressedCardPolicy, run_schedule
 
-results = run_schedule(base_config=EnvConfig(hand_size=10))
-for r in results:
-    print(f"hand_size={r.hand_size} reward={r.reward} points={r.round_points}")
+opponents = [None, DressedCardPolicy(), DressedCardPolicy(), DressedCardPolicy()]
+results = run_schedule(agent=None, base_config=EnvConfig(hand_size=10), opponents=opponents)
 ```
-Provide your own `agent` callable to replace the default random policy (for example, use `DressedCardPolicy` for a face-card counting heuristic) or supply custom opponent policies via the `opponents` argument.
+(Provide an `agent` callable to control the learning seat; omit it to auto-play with the provided opponents.)
 
-To sample full tournaments with random heuristic assignments:
+---
+
+## PyTorch DQN tooling
+### Library API
 ```python
-from plump_rl import EnvConfig, DressedCardPolicy, ZeroBidDodger, ShortSuitAggressor, MiddleManager
-from plump_rl.tournament import simulate_random_tournaments
+from plump_rl import EnvConfig, DressedCardPolicy, train_dqn
 
-policy_pool = [DressedCardPolicy, ZeroBidDodger, ShortSuitAggressor, MiddleManager]
-result = simulate_random_tournaments(
-    100,
-    policy_factories=policy_pool,
-    base_config=EnvConfig(num_players=5, hand_size=10),
-)
-
-for name, stats in result.policy_stats.items():
-    print(f"{name:20s} avg_points={stats.average_points:.2f} wins={stats.tournament_wins}/{stats.seats_played}")
-```
-
-### Available opponent policies
-- `RuleBasedPolicy`: conservative baseline using high-card counts.
-- `DressedCardPolicy`: estimates via face cards and plays straighter.
-- `ZeroBidDodger`: always bids 0 and tries to shed every trick.
-- `ShortSuitAggressor`: bids based on short suits, pushing aggressive leads in those suits.
-- `MiddleManager`: balances estimation using mid ranks and plays around suit control.
-
-### PyTorch DQN quick start
-```python
-from plump_rl import train_dqn, EnvConfig, DressedCardPolicy
-
-# Optional: pit the learning agent against heuristics
 opponents = [None, DressedCardPolicy(), DressedCardPolicy(), DressedCardPolicy()]
 result = train_dqn(
     num_episodes=500,
     config=EnvConfig(num_players=4, hand_size=10),
     opponents=opponents,
 )
-print("Final average reward:", sum(result.episode_rewards[-50:]) / 50)
+print("Last 50-episode avg:", sum(result.episode_rewards[-50:]) / 50)
 ```
-`train_dqn` returns all per-episode rewards so you can visualize learning curves or checkpoint models for later evaluation.
+`train_dqn` returns all episode rewards plus the trained `DQNAgent`, so you can wrap it with `make_dqn_agent_policy(...)` and evaluate in tournaments.
 
-### Dependencies
+### CLI script
+```
+python main.py --episodes 800 --num-players 4 --hand-size 10 --eval-tournaments 30 --save-model checkpoints/dqn.pt
+```
+- Trains against a rotating roster of heuristics.
+- Optionally saves the PyTorch policy network.
+- Runs multiple evaluation tournaments and prints per-tournament totals plus mean ± std.
+
+---
+
+## Dependencies
 - Python 3.10+
 - `gymnasium`
 - `numpy`
