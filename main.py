@@ -14,7 +14,6 @@ from plump_rl import (
     ShortSuitAggressor,
     ZeroBidDodger,
     RoundResult,
-    format_round_history,
     make_dqn_agent_policy,
     round_results_to_dict,
     run_schedule,
@@ -76,12 +75,18 @@ def main():
     parser.add_argument("--eval-tournaments", type=int, default=20, help="Number of evaluation tournaments.")
     parser.add_argument("--skip-eval", action="store_true", help="Skip evaluation after training.")
     parser.add_argument("--save-model", type=str, default=None, help="Optional path to save the trained policy network.")
+    parser.add_argument("--record-games", type=str, default=None, help="If set, dump evaluation game histories to this JSON file.")
     args = parser.parse_args()
 
     config = EnvConfig(num_players=args.num_players, hand_size=args.hand_size, agent_id=args.agent_id)
     training_opponents = build_opponents(config)
 
-    print(f"Training DQN agent for {args.episodes} episodes...")
+    logger.info(
+        "Training DQN agent for {} episodes (players={}, hand_size={})",
+        args.episodes,
+        args.num_players,
+        args.hand_size,
+    )
     training_result = train_dqn(
         num_episodes=args.episodes,
         config=config,
@@ -95,18 +100,41 @@ def main():
         path = Path(args.save_model)
         path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(agent.policy_net.state_dict(), path)
-        print(f"Saved policy network to {path}")
+        logger.success("Saved policy network to {}", path)
 
     if args.skip_eval:
         return
 
     agent_fn = make_dqn_agent_policy(agent, config)
-    totals = evaluate_agent(agent_fn, config, args.eval_tournaments, args.seed)
+    record_games = args.record_games is not None
+    totals, seat_history, tournament_rounds = evaluate_agent(
+        agent_fn, config, args.eval_tournaments, args.seed, record_games=record_games
+    )
     avg = float(np.mean(totals)) if totals else 0.0
     std = float(np.std(totals)) if totals else 0.0
-    print(f"Evaluation across {len(totals)} tournaments: avg_points={avg:.2f} ± {std:.2f}")
+    logger.info(
+        "Evaluation across {} tournaments: avg_points={:.2f} ± {:.2f}",
+        len(totals),
+        avg,
+        std,
+    )
     if totals:
-        print("Individual tournament totals:", ", ".join(f"{t:.1f}" for t in totals))
+        logger.info("Individual totals: {}", ", ".join(f"{t:.1f}" for t in totals))
+
+    if record_games and tournament_rounds:
+        path = Path(args.record_games)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = []
+        for idx, (rounds, seats) in enumerate(zip(tournament_rounds, seat_history)):
+            payload.append(
+                {
+                    "tournament_index": idx,
+                    "seat_policies": seats,
+                    "rounds": round_results_to_dict(rounds),
+                }
+            )
+        path.write_text(json.dumps(payload, indent=2))
+        logger.success("Recorded {} tournaments to {}", len(payload), path)
 
 
 if __name__ == "__main__":
