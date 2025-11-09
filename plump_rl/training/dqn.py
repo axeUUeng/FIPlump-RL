@@ -13,6 +13,7 @@ from tqdm import tqdm
 
 from loguru import logger
 
+from ..encoding import encode_observation, observation_dim
 from ..env import EnvConfig, PlumpEnv
 from ..policies import BasePolicy
 
@@ -20,31 +21,11 @@ AgentFn = Callable[[dict, dict, PlumpEnv], int]
 
 
 def _flatten_observation(obs: dict, config: EnvConfig) -> np.ndarray:
-    phase = np.array([obs["phase"]], dtype=np.float32)
-    hand = obs["hand"].astype(np.float32)
-    trick = obs["current_trick"].astype(np.float32) / 52.0
-    lead = np.array([obs["lead_suit"] / 4.0], dtype=np.float32)
-    estimations = obs["estimations"].astype(np.float32) / max(1, config.hand_size)
-    tricks_won = obs["tricks_won"].astype(np.float32) / max(1, config.hand_size)
-    cards_remaining = obs["cards_remaining"].astype(np.float32) / max(1, config.hand_size)
-    tricks_played = np.array([obs["tricks_played"] / max(1, config.hand_size)], dtype=np.float32)
-    return np.concatenate(
-        [phase, hand, trick, lead, estimations, tricks_won, cards_remaining, tricks_played]
-    )
+    return encode_observation(obs, config)
 
 
 def _obs_size(config: EnvConfig) -> int:
-    dummy_obs = {
-        "phase": 0,
-        "hand": np.zeros(52, dtype=np.int8),
-        "current_trick": np.zeros(config.num_players, dtype=np.int16),
-        "lead_suit": 4,
-        "estimations": np.zeros(config.num_players, dtype=np.int8),
-        "tricks_won": np.zeros(config.num_players, dtype=np.int8),
-        "cards_remaining": np.zeros(config.num_players, dtype=np.int8),
-        "tricks_played": np.int8(0),
-    }
-    return len(_flatten_observation(dummy_obs, config))
+    return observation_dim(config)
 
 
 class DuelingQNetwork(nn.Module):
@@ -293,6 +274,23 @@ def make_dqn_agent_policy(agent: DQNAgent, config: EnvConfig) -> AgentFn:
     def _policy(obs: dict, info: dict, env: PlumpEnv) -> int:
         del env
         state = _flatten_observation(obs, config)
+        return agent.act_greedy(state, info["legal_actions"])
+
+    return _policy
+
+
+def make_dqn_agent_policy_from_state(state_dict: dict, config: EnvConfig) -> AgentFn:
+    """Return a greedy policy callable from a serialized network state."""
+
+    state_dim = observation_dim(config)
+    action_dim = config.hand_size + 1 + 52
+    agent = DQNAgent(state_dim, action_dim)
+    agent.policy_net.load_state_dict(state_dict)
+    agent.policy_net.eval()
+
+    def _policy(obs: dict, info: dict, env: PlumpEnv) -> int:
+        del env
+        state = encode_observation(obs, config)
         return agent.act_greedy(state, info["legal_actions"])
 
     return _policy
