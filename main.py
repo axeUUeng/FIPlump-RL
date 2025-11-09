@@ -11,40 +11,76 @@ from plump_rl import (
     DressedCardPolicy,
     EnvConfig,
     MiddleManager,
+    RandomLegalPolicy,
     ShortSuitAggressor,
     ZeroBidDodger,
     RoundResult,
     make_dqn_agent_policy,
+    make_dqn_agent_policy_from_state,
+    make_ppo_agent_policy,
     round_results_to_dict,
     run_schedule,
     train_dqn,
+    train_ppo,
 )
 
 POLICY_POOL = [DressedCardPolicy, ShortSuitAggressor, MiddleManager, ZeroBidDodger]
 
 
-def build_opponents(config: EnvConfig, rng: Optional[np.random.Generator] = None):
+def build_opponents(
+    config: EnvConfig,
+    rng: Optional[np.random.Generator] = None,
+    random_prob: float = 0.0,
+    checkpoint_policies: Optional[List] = None,
+):
+    """Return a list of opponent policies for the current run."""
     opponents = []
+    checkpoint_policies = checkpoint_policies or []
     for idx in range(config.num_players):
         if idx == config.agent_id:
             opponents.append(None)
             continue
-        policy_cls = (
-            POLICY_POOL[(idx - 1) % len(POLICY_POOL)]
-            if rng is None
-            else rng.choice(POLICY_POOL)
-        )
+        use_random = False
+        if rng is not None:
+            use_random = rng.random() < random_prob
+        elif random_prob > 0:
+            use_random = np.random.rand() < random_prob
+        if use_random:
+            opponents.append(RandomLegalPolicy())
+            continue
+        if checkpoint_policies:
+            policy = rng.choice(checkpoint_policies) if rng else checkpoint_policies[idx % len(checkpoint_policies)]
+            opponents.append(policy)
+            continue
+        if rng is None:
+            policy_cls = POLICY_POOL[(idx - 1) % len(POLICY_POOL)]
+        else:
+            policy_cls = rng.choice(POLICY_POOL)
         opponents.append(policy_cls())
     return opponents
 
 
-def evaluate_agent(agent_fn, config: EnvConfig, tournaments: int, seed: Optional[int], record_games: bool = False):
+def evaluate_agent(
+    agent_fn,
+    config: EnvConfig,
+    tournaments: int,
+    seed: Optional[int],
+    record_games: bool = False,
+    random_prob: float = 0.0,
+    checkpoint_policies: Optional[List] = None,
+):
+    """Evaluate an agent across multiple tournaments."""
     rng = np.random.default_rng(seed)
     totals: List[float] = []
     seat_assignments: List[List[str]] = []
     tournament_rounds: List[List[RoundResult]] = []
     for t in range(tournaments):
-        opponents = build_opponents(config, rng)
+        opponents = build_opponents(
+            config,
+            rng,
+            random_prob=random_prob,
+            checkpoint_policies=checkpoint_policies,
+        )
         seat_assignments.append(
             ["Agent" if idx == config.agent_id else opp.__class__.__name__ for idx, opp in enumerate(opponents)]
         )
@@ -68,6 +104,7 @@ def evaluate_agent(agent_fn, config: EnvConfig, tournaments: int, seed: Optional
 def main():
     parser = argparse.ArgumentParser(description="Train and evaluate a DQN agent for Plump.")
     parser.add_argument("--episodes", type=int, default=500, help="Training episodes.")
+    parser.add_argument("--algo", choices=["dqn", "ppo"], default="dqn", help="RL algorithm to train.")
     parser.add_argument("--num-players", type=int, default=4, help="Number of players in the environment.")
     parser.add_argument("--hand-size", type=int, default=10, help="Cards dealt to each player.")
     parser.add_argument("--agent-id", type=int, default=0, help="Index of the learning agent.")
@@ -76,39 +113,82 @@ def main():
     parser.add_argument("--skip-eval", action="store_true", help="Skip evaluation after training.")
     parser.add_argument("--save-model", type=str, default=None, help="Optional path to save the trained policy network.")
     parser.add_argument("--record-games", type=str, default=None, help="If set, dump evaluation game histories to this JSON file.")
+    parser.add_argument("--random-opponent-prob", type=float, default=0.25, help="Probability that any opponent seat is filled by a random legal policy.")
+    parser.add_argument(
+        "--self-play-checkpoints",
+        nargs="*",
+        default=[],
+        help="Paths to saved agent checkpoints that will be sampled as opponents (self-play).",
+    )
     args = parser.parse_args()
 
     config = EnvConfig(num_players=args.num_players, hand_size=args.hand_size, agent_id=args.agent_id)
-    training_opponents = build_opponents(config)
+    self_play_policies = []
+    for path in args.self_play_checkpoints:
+        ckpt_path = Path(path)
+        if not ckpt_path.exists():
+            logger.warning("Checkpoint {} not found, skipping.", ckpt_path)
+            continue
+        state = torch.load(ckpt_path, map_location="cpu")
+        if args.algo == "dqn":
+            policy = make_dqn_agent_policy_from_state(state, config)
+        else:
+            policy = make_ppo_agent_policy(state, config)
+        self_play_policies.append(policy)
+
+    training_opponents = build_opponents(
+        config,
+        random_prob=args.random_opponent_prob,
+        checkpoint_policies=self_play_policies,
+    )
 
     logger.info(
-        "Training DQN agent for {} episodes (players={}, hand_size={})",
+        "Training {} agent for {} episodes (players={}, hand_size={})",
+        args.algo.upper(),
         args.episodes,
         args.num_players,
         args.hand_size,
     )
-    training_result = train_dqn(
-        num_episodes=args.episodes,
-        config=config,
-        opponents=training_opponents,
-        seed=args.seed,
-        show_progress=True,
-    )
-    agent = training_result.agent
+    if args.algo == "dqn":
+        training_result = train_dqn(
+            num_episodes=args.episodes,
+            config=config,
+            opponents=training_opponents,
+            seed=args.seed,
+            show_progress=True,
+        )
+        agent_policy = make_dqn_agent_policy(training_result.agent, config)
+        model_state = training_result.agent.policy_net.state_dict()
+    else:
+        training_result = train_ppo(
+            num_episodes=args.episodes,
+            config=config,
+            opponents=training_opponents,
+            seed=args.seed,
+            show_progress=True,
+        )
+        agent_policy = make_ppo_agent_policy(training_result.model_state, config)
+        model_state = training_result.model_state
 
     if args.save_model:
         path = Path(args.save_model)
         path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(agent.policy_net.state_dict(), path)
+        torch.save(model_state, path)
         logger.success("Saved policy network to {}", path)
 
     if args.skip_eval:
         return
 
-    agent_fn = make_dqn_agent_policy(agent, config)
+    agent_fn = agent_policy
     record_games = args.record_games is not None
     totals, seat_history, tournament_rounds = evaluate_agent(
-        agent_fn, config, args.eval_tournaments, args.seed, record_games=record_games
+        agent_fn,
+        config,
+        args.eval_tournaments,
+        args.seed,
+        record_games=record_games,
+        random_prob=args.random_opponent_prob,
+        checkpoint_policies=self_play_policies,
     )
     avg = float(np.mean(totals)) if totals else 0.0
     std = float(np.std(totals)) if totals else 0.0
