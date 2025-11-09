@@ -7,7 +7,9 @@ from .tournament import (
     RoundResult,
     TournamentBatchResult,
     default_schedule,
+    format_round_history,
     run_schedule,
+    round_results_to_dict,
     simulate_random_tournaments,
 )
 from .training.dqn import TrainingResult, make_dqn_agent_policy, train_dqn
@@ -24,7 +26,9 @@ __all__ = [
     "RoundResult",
     "TournamentBatchResult",
     "default_schedule",
+    "format_round_history",
     "run_schedule",
+    "round_results_to_dict",
     "simulate_random_tournaments",
     "train_dqn",
     "TrainingResult",

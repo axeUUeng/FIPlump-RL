@@ -56,6 +56,20 @@ def format_round_history(history: Optional[dict], player_labels: Optional[Sequen
     return "\n".join(lines)
 
 
+def round_results_to_dict(round_results: Sequence[RoundResult]) -> List[dict]:
+    payload: List[dict] = []
+    for result in round_results:
+        payload.append(
+            {
+                "hand_size": result.hand_size,
+                "reward": result.reward,
+                "round_points": result.round_points,
+                "history": result.history,
+            }
+        )
+    return payload
+
+
 def default_schedule(max_hand_size: int = 10, min_hand_size: int = 1) -> List[int]:
     """Return the canonical schedule: max→min then back up (without repeating endpoints)."""
     down = list(range(max_hand_size, min_hand_size - 1, -1))
