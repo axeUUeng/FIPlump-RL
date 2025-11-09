@@ -1,7 +1,14 @@
 """Utilities for training reinforcement-learning agents on Plump."""
 
 from .env import EnvConfig, PlumpEnv
-from .policies import DressedCardPolicy, MiddleManager, RuleBasedPolicy, ShortSuitAggressor, ZeroBidDodger
+from .policies import (
+    DressedCardPolicy,
+    MiddleManager,
+    RandomLegalPolicy,
+    RuleBasedPolicy,
+    ShortSuitAggressor,
+    ZeroBidDodger,
+)
 from .tournament import (
     PolicyAggregate,
     RoundResult,
@@ -12,7 +19,13 @@ from .tournament import (
     round_results_to_dict,
     simulate_random_tournaments,
 )
-from .training.dqn import TrainingResult, make_dqn_agent_policy, train_dqn
+from .training.dqn import (
+    TrainingResult,
+    make_dqn_agent_policy,
+    make_dqn_agent_policy_from_state,
+    train_dqn,
+)
+from .training.ppo import PPOResult, make_ppo_agent_policy, train_ppo
 
 __all__ = [
     "PlumpEnv",
@@ -22,6 +35,7 @@ __all__ = [
     "ZeroBidDodger",
     "ShortSuitAggressor",
     "MiddleManager",
+    "RandomLegalPolicy",
     "PolicyAggregate",
     "RoundResult",
     "TournamentBatchResult",
@@ -33,4 +47,8 @@ __all__ = [
     "train_dqn",
     "TrainingResult",
     "make_dqn_agent_policy",
+    "make_dqn_agent_policy_from_state",
+    "train_ppo",
+    "PPOResult",
+    "make_ppo_agent_policy",
 ]
