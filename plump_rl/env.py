@@ -10,7 +10,7 @@ from gymnasium import Env, spaces
 from gymnasium.utils import seeding
 
 from .cards import DECK_SIZE, card_rank, card_suit, card_to_str, hand_to_binary
-from .policies import BasePolicy, RuleBasedPolicy, TrickContext
+from .policies import BasePolicy, RuleBasedPolicy, SelfPlayOpponent, TrickContext
 
 
 @dataclass
@@ -69,6 +69,10 @@ class PlumpEnv(Env):
 
         self.np_random, _ = seeding.np_random(seed)
         self.opponents = self._build_opponents(opponents)
+        for opponent in self.opponents:
+            attach = getattr(opponent, "attach_env", None)
+            if callable(attach):
+                attach(self)
 
         # Mutable state placeholders
         self.hands: List[List[int]] = []
@@ -218,6 +222,7 @@ class PlumpEnv(Env):
         self.estimations = [-1] * self.config.num_players
         self.tricks_won = [0] * self.config.num_players
         self.trick_cards = [-1] * self.config.num_players
+        self.cards_played = []
         self.trick_progress = 0
         self.tricks_played = 0
         self.trick_leader = -1
@@ -304,6 +309,7 @@ class PlumpEnv(Env):
             self.lead_suit = card_suit(card_id)
             self.trick_leader = player_id
         self.trick_progress += 1
+        self.cards_played.append(card_id)
         self._log_card_play(player_id, card_id)
 
         if self.trick_progress == self.config.num_players:
@@ -375,29 +381,35 @@ class PlumpEnv(Env):
         return self._get_observation(), self.last_reward, True, False, info
 
     def _get_observation(self):
-        obs = {
+        return self._make_observation(self.config.agent_id)
+
+    def _make_observation(self, player_id: int) -> dict:
+        return {
             "phase": 0 if self.phase == "estimation" else 1,
-            "hand": np.array(hand_to_binary(self.hands[self.config.agent_id]), dtype=np.int8),
+            "hand": np.array(hand_to_binary(self.hands[player_id]), dtype=np.int8),
             "current_trick": np.array(self.trick_cards, dtype=np.int16),
             "lead_suit": self.lead_suit if self.lead_suit != -1 else 4,
             "estimations": np.array(self.estimations, dtype=np.int8),
             "tricks_won": np.array(self.tricks_won, dtype=np.int8),
             "cards_remaining": np.array([len(hand) for hand in self.hands], dtype=np.int8),
             "tricks_played": np.int8(self.tricks_played),
+            "cards_played": np.array(self.cards_played, dtype=np.int16),
         }
-        return obs
 
     def _legal_actions_mask(self):
+        return self._legal_actions_mask_for(self.config.agent_id)
+
+    def _legal_actions_mask_for(self, player_id: int):
         mask = np.zeros(self.action_space.n, dtype=np.int8)
         if self.done:
             return mask
         if self.phase == "estimation":
             mask[: self.estimation_action_count] = 1
-            cant_say = self._cant_say_value(self.config.agent_id)
+            cant_say = self._cant_say_value(player_id)
             if cant_say is not None and 0 <= cant_say < self.estimation_action_count:
                 mask[cant_say] = 0
         else:
-            for card in self._legal_cards(self.config.agent_id):
+            for card in self._legal_cards(player_id):
                 mask[self.estimation_action_count + card] = 1
         return mask
 
