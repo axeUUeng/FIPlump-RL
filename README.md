@@ -104,7 +104,8 @@ dqn_result = train_dqn(
     opponents=opponents,
 )
 ppo_result = train_ppo(
-    num_episodes=500,
+    num_updates=500,
+    rollout_steps=256,
     config=EnvConfig(num_players=4, hand_size=10),
     opponents=opponents,
 )
@@ -129,6 +130,14 @@ python main.py --episodes 800 --num-players 4 --hand-size 10 --eval-tournaments 
 - `--record-games`: if set, writes every evaluation round (including trick history) to the given JSON file so you can replay specific games later.
 - `--self-play-checkpoints`: list of saved agent weights that can be sampled as self-play opponents; useful for progressive training.
 - All status messages go through Loguru, and `train_dqn` shows a tqdm bar by default.
+
+### Offline evaluation
+To evaluate a saved agent without retraining, use the helper script:
+```
+python scripts/eval_agent.py --checkpoint checkpoints/dqn.pt --algo dqn --tournaments 50 \
+  --num-players 4 --hand-size 10 --stats-output logs/stats.json --record-games logs/eval.json
+```
+It runs tournaments against the heuristic/random pool, prints aggregate metrics (mean/std of points, hand-size breakdowns), and optionally stores raw round histories or summary JSON.
 
 ---
 

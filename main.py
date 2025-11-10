@@ -162,14 +162,14 @@ def main():
         model_state = training_result.agent.policy_net.state_dict()
     else:
         training_result = train_ppo(
-            num_episodes=args.episodes,
+            num_updates=args.episodes,
             config=config,
             opponents=training_opponents,
             seed=args.seed,
             show_progress=True,
         )
-        agent_policy = make_ppo_agent_policy(training_result.model_state, config)
-        model_state = training_result.model_state
+        agent_policy = make_ppo_agent_policy(training_result.model_bundle, config)
+        model_state = training_result.model_bundle
 
     if args.save_model:
         path = Path(args.save_model)

@@ -13,6 +13,8 @@ from tqdm import tqdm
 
 from loguru import logger
 
+from .mlflow_utils import end_run_if_started, ensure_run, log_metric, log_params, set_tag
+
 from ..encoding import encode_observation, observation_dim
 from ..env import EnvConfig, PlumpEnv
 from ..policies import BasePolicy
@@ -119,6 +121,7 @@ class DQNAgent:
         self.target_net = DuelingQNetwork(state_dim, action_dim).to(self.device)
         self.target_net.load_state_dict(self.policy_net.state_dict())
         self.optimizer = optim.AdamW(self.policy_net.parameters(), lr=lr, weight_decay=1e-4)
+        self.lr = lr
         self.gamma = gamma
         self.epsilon_start = epsilon_start
         self.epsilon_end = epsilon_end
@@ -145,10 +148,13 @@ class DQNAgent:
         self.greedy_calls += 1
         return int(np.argmax(masked_q))
 
-    def select_action(self, state: np.ndarray, legal_mask: np.ndarray) -> int:
-        epsilon = self.epsilon_end + (self.epsilon_start - self.epsilon_end) * np.exp(
+    def current_epsilon(self) -> float:
+        return self.epsilon_end + (self.epsilon_start - self.epsilon_end) * np.exp(
             -1.0 * self.step_count / self.epsilon_decay
         )
+
+    def select_action(self, state: np.ndarray, legal_mask: np.ndarray) -> int:
+        epsilon = self.current_epsilon()
         self.step_count += 1
         legal_indices = np.nonzero(legal_mask)[0]
         if len(legal_indices) == 0:
@@ -163,7 +169,7 @@ class DQNAgent:
 
     def update(self, buffer: ReplayBuffer, batch_size: int):
         if len(buffer) < batch_size:
-            return
+            return None
         states, actions, rewards, next_states, dones, next_masks = buffer.sample(batch_size)
         states_tensor = torch.from_numpy(states).float().to(self.device)
         actions_tensor = torch.from_numpy(actions).long().to(self.device)
@@ -190,6 +196,7 @@ class DQNAgent:
 
         if self.step_count % self.target_update_interval == 0:
             self.target_net.load_state_dict(self.policy_net.state_dict())
+        return float(loss.item())
 
     def stats(self) -> dict:
         calls = max(1, self.greedy_calls)
@@ -219,53 +226,99 @@ def train_dqn(
     show_progress: bool = False,
 ) -> TrainingResult:
     """Train a DQN agent directly on PlumpEnv using PyTorch."""
+    run_started = ensure_run("train_dqn")
+    try:
+        env_config = config or EnvConfig()
+        env = PlumpEnv(env_config, opponents=opponents, seed=seed)
+        state_dim = _obs_size(env_config)
+        action_dim = env.action_space.n
+        agent = DQNAgent(state_dim, action_dim)
+        buffer = ReplayBuffer(replay_capacity)
+        episode_rewards: List[float] = []
+        update_counter = 0
 
-    env_config = config or EnvConfig()
-    env = PlumpEnv(env_config, opponents=opponents, seed=seed)
-    state_dim = _obs_size(env_config)
-    action_dim = env.action_space.n
-    agent = DQNAgent(state_dim, action_dim)
-    buffer = ReplayBuffer(replay_capacity)
-    episode_rewards: List[float] = []
-
-    iterator: Iterable[int]
-    if show_progress:
-        iterator = tqdm(range(num_episodes), desc="Training", unit="episode")
-    else:
-        iterator = range(num_episodes)
-
-    for episode in iterator:
-        obs, info = env.reset()
-        state = _flatten_observation(obs, env_config)
-        done = False
-        total_reward = 0.0
-
-        while not done:
-            action = agent.select_action(state, info["legal_actions"])
-            next_obs, reward, terminated, truncated, info = env.step(action)
-            done = terminated or truncated
-            next_state = _flatten_observation(next_obs, env_config)
-            buffer.push(state, action, reward, next_state, done, info["legal_actions"])
-            state = next_state
-            total_reward += reward
-
-            if agent.step_count > warmup_steps:
-                agent.update(buffer, batch_size)
-
-        episode_rewards.append(total_reward)
-        if not show_progress and (episode + 1) % 50 == 0:
-            avg = np.mean(episode_rewards[-50:])
-            logger.info("[Episode {}] avg_reward (last 50): {:.2f}", episode + 1, avg)
-
-    if not show_progress:
-        stats = agent.stats()
-        logger.info(
-            "Illegal argmax rate: {:.3f} | mean |Q|: {:.3f}",
-            stats["illegal_argmax_rate"],
-            stats["mean_abs_q"],
+        set_tag("algorithm", "dqn")
+        log_params(
+            {
+                "algo": "dqn",
+                "dqn.num_episodes": num_episodes,
+                "dqn.replay_capacity": replay_capacity,
+                "dqn.batch_size": batch_size,
+                "dqn.warmup_steps": warmup_steps,
+                "env.num_players": env_config.num_players,
+                "env.hand_size": env_config.hand_size,
+                "env.agent_id": env_config.agent_id,
+                "training.seed": seed if seed is not None else -1,
+            }
+        )
+        log_params(
+            {
+                "dqn.gamma": agent.gamma,
+                "dqn.lr": agent.lr,
+                "dqn.epsilon_start": agent.epsilon_start,
+                "dqn.epsilon_end": agent.epsilon_end,
+                "dqn.epsilon_decay": agent.epsilon_decay,
+                "dqn.target_update_interval": agent.target_update_interval,
+            }
         )
 
-    return TrainingResult(episode_rewards=episode_rewards, config=env_config, agent=agent)
+        iterator: Iterable[int]
+        if show_progress:
+            iterator = tqdm(range(num_episodes), desc="Training", unit="episode")
+        else:
+            iterator = range(num_episodes)
+
+        for episode in iterator:
+            obs, info = env.reset()
+            state = _flatten_observation(obs, env_config)
+            done = False
+            total_reward = 0.0
+            episode_losses: List[float] = []
+            episode_steps = 0
+
+            while not done:
+                action = agent.select_action(state, info["legal_actions"])
+                next_obs, reward, terminated, truncated, info = env.step(action)
+                done = terminated or truncated
+                next_state = _flatten_observation(next_obs, env_config)
+                buffer.push(state, action, reward, next_state, done, info["legal_actions"])
+                state = next_state
+                total_reward += reward
+                episode_steps += 1
+
+                if agent.step_count > warmup_steps:
+                    loss_value = agent.update(buffer, batch_size)
+                    if loss_value is not None:
+                        update_counter += 1
+                        episode_losses.append(loss_value)
+                        log_metric("dqn/batch_loss", loss_value, step=update_counter)
+
+            step_idx = episode + 1
+            episode_rewards.append(total_reward)
+            log_metric("dqn/episode_reward", total_reward, step=step_idx)
+            log_metric("dqn/episode_length", episode_steps, step=step_idx)
+            log_metric("dqn/epsilon", agent.current_epsilon(), step=step_idx)
+            if episode_losses:
+                log_metric("dqn/episode_loss", float(np.mean(episode_losses)), step=step_idx)
+
+            if not show_progress and step_idx % 50 == 0:
+                avg = np.mean(episode_rewards[-50:])
+                logger.info("[Episode {}] avg_reward (last 50): {:.2f}", step_idx, avg)
+                log_metric("dqn/avg_reward_last_50", float(avg), step=step_idx)
+
+        if not show_progress:
+            stats = agent.stats()
+            logger.info(
+                "Illegal argmax rate: {:.3f} | mean |Q|: {:.3f}",
+                stats["illegal_argmax_rate"],
+                stats["mean_abs_q"],
+            )
+            log_metric("dqn/illegal_argmax_rate", stats["illegal_argmax_rate"], step=num_episodes)
+            log_metric("dqn/mean_abs_q", stats["mean_abs_q"], step=num_episodes)
+
+        return TrainingResult(episode_rewards=episode_rewards, config=env_config, agent=agent)
+    finally:
+        end_run_if_started(run_started)
 
 
 def make_dqn_agent_policy(agent: DQNAgent, config: EnvConfig) -> AgentFn:

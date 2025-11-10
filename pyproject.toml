@@ -11,4 +11,12 @@ dependencies = [
     "torchvision>=0.24.0",
     "tqdm>=4.66.5",
     "loguru>=0.7.2",
+    "pandas>=2.3.3",
+    "pytest>=9.0.0",
+    "mlflow>=3.6.0",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.1.0",
 ]

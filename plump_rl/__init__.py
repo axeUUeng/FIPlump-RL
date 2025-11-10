@@ -26,7 +26,7 @@ from .training.dqn import (
     make_dqn_agent_policy_from_state,
     train_dqn,
 )
-from .training.ppo import PPOResult, make_ppo_agent_policy, train_ppo
+from .training.ppo import PPOResult, make_ppo_agent_policy, train_ppo, load_agent_policy_from_state
 
 __all__ = [
     "PlumpEnv",
@@ -53,4 +53,5 @@ __all__ = [
     "train_ppo",
     "PPOResult",
     "make_ppo_agent_policy",
+    "load_agent_policy_from_state",
 ]
