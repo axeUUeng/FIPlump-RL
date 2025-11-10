@@ -233,79 +233,79 @@ def train_ppo(
             batch_losses: List[float] = []
             batch_clip_fractions: List[float] = []
 
-        for epoch in range(batch_epochs):
-            np.random.shuffle(indices)
-            for start in range(0, dataset_size, minibatch):
-                mb_idx = indices[start : start + minibatch]
+            for epoch in range(batch_epochs):
+                np.random.shuffle(indices)
+                for start in range(0, dataset_size, minibatch):
+                    mb_idx = indices[start : start + minibatch]
 
-                logits, values = net(states_tensor[mb_idx])
-                dist = masked_categorical(logits, masks_tensor[mb_idx])
-                logp = dist.log_prob(actions_tensor[mb_idx])
-                entropy = dist.entropy().mean()
+                    logits, values = net(states_tensor[mb_idx])
+                    dist = masked_categorical(logits, masks_tensor[mb_idx])
+                    logp = dist.log_prob(actions_tensor[mb_idx])
+                    entropy = dist.entropy().mean()
 
-                ratios = torch.exp(logp - old_logprobs_tensor[mb_idx])
-                surr1 = ratios * advantages_tensor[mb_idx]
-                surr2 = torch.clamp(ratios, 1 - clip_ratio, 1 + clip_ratio) * advantages_tensor[mb_idx]
-                policy_loss = -torch.min(surr1, surr2).mean()
-                clip_fraction = (
-                    torch.gt(ratios, 1 + clip_ratio) | torch.lt(ratios, 1 - clip_ratio)
-                ).float().mean().item()
+                    ratios = torch.exp(logp - old_logprobs_tensor[mb_idx])
+                    surr1 = ratios * advantages_tensor[mb_idx]
+                    surr2 = torch.clamp(ratios, 1 - clip_ratio, 1 + clip_ratio) * advantages_tensor[mb_idx]
+                    policy_loss = -torch.min(surr1, surr2).mean()
+                    clip_fraction = (
+                        torch.gt(ratios, 1 + clip_ratio) | torch.lt(ratios, 1 - clip_ratio)
+                    ).float().mean().item()
 
-                if vf_clip_eps > 0:
-                    value_pred = values.squeeze(-1)
-                    v_clipped = old_values_tensor[mb_idx] + torch.clamp(
-                        value_pred - old_values_tensor[mb_idx], -vf_clip_eps, vf_clip_eps
-                    )
-                    unclipped = (value_pred - returns_tensor[mb_idx]) ** 2
-                    clipped = (v_clipped - returns_tensor[mb_idx]) ** 2
-                    value_loss = 0.5 * torch.max(unclipped, clipped).mean()
-                else:
-                    value_loss = 0.5 * nn.functional.mse_loss(values.squeeze(-1), returns_tensor[mb_idx])
+                    if vf_clip_eps > 0:
+                        value_pred = values.squeeze(-1)
+                        v_clipped = old_values_tensor[mb_idx] + torch.clamp(
+                            value_pred - old_values_tensor[mb_idx], -vf_clip_eps, vf_clip_eps
+                        )
+                        unclipped = (value_pred - returns_tensor[mb_idx]) ** 2
+                        clipped = (v_clipped - returns_tensor[mb_idx]) ** 2
+                        value_loss = 0.5 * torch.max(unclipped, clipped).mean()
+                    else:
+                        value_loss = 0.5 * nn.functional.mse_loss(values.squeeze(-1), returns_tensor[mb_idx])
 
-                loss = policy_loss + vf_coef * value_loss - ent_coef * entropy
-                optimizer.zero_grad()
-                loss.backward()
-                nn.utils.clip_grad_norm_(net.parameters(), max_grad_norm)
-                optimizer.step()
+                    loss = policy_loss + vf_coef * value_loss - ent_coef * entropy
+                    optimizer.zero_grad()
+                    loss.backward()
+                    nn.utils.clip_grad_norm_(net.parameters(), max_grad_norm)
+                    optimizer.step()
 
-                batch_policy_losses.append(policy_loss.item())
-                batch_value_losses.append(value_loss.item())
-                batch_entropies.append(entropy.item())
-                batch_losses.append(loss.item())
-                batch_clip_fractions.append(clip_fraction)
+                    batch_policy_losses.append(policy_loss.item())
+                    batch_value_losses.append(value_loss.item())
+                    batch_entropies.append(entropy.item())
+                    batch_losses.append(loss.item())
+                    batch_clip_fractions.append(clip_fraction)
 
-            with torch.inference_mode():
-                logits_new, _ = net(states_tensor)
-                dist_new = masked_categorical(logits_new, masks_tensor)
-                approx_kl = (old_logprobs_tensor - dist_new.log_prob(actions_tensor)).mean().clamp_min(0).item()
-            if approx_kl > target_kl:
-                if not show_progress:
-                    logger.debug("Early stopping epoch due to KL {:.4f} > {:.4f}", approx_kl, target_kl)
-                break
+                with torch.inference_mode():
+                    logits_new, _ = net(states_tensor)
+                    dist_new = masked_categorical(logits_new, masks_tensor)
+                    approx_kl = (old_logprobs_tensor - dist_new.log_prob(actions_tensor)).mean().clamp_min(0).item()
+                if approx_kl > target_kl:
+                    if not show_progress:
+                        logger.debug("Early stopping epoch due to KL {:.4f} > {:.4f}", approx_kl, target_kl)
+                    break
 
-        step_idx = update + 1
-        if batch_losses:
-            log_metric("ppo/loss", float(np.mean(batch_losses)), step=step_idx)
-        if batch_policy_losses:
-            log_metric("ppo/policy_loss", float(np.mean(batch_policy_losses)), step=step_idx)
-        if batch_value_losses:
-            log_metric("ppo/value_loss", float(np.mean(batch_value_losses)), step=step_idx)
-        if batch_entropies:
-            log_metric("ppo/entropy", float(np.mean(batch_entropies)), step=step_idx)
-        if batch_clip_fractions:
-            log_metric("ppo/clip_fraction", float(np.mean(batch_clip_fractions)), step=step_idx)
-        log_metric("ppo/approx_kl", approx_kl, step=step_idx)
-        log_metric("ppo/rollout_steps", steps_collected, step=step_idx)
-        if rollout_rewards:
-            log_metric("ppo/rollout_reward_mean", float(np.mean(rollout_rewards)), step=step_idx)
+            step_idx = update + 1
+            if batch_losses:
+                log_metric("ppo/loss", float(np.mean(batch_losses)), step=step_idx)
+            if batch_policy_losses:
+                log_metric("ppo/policy_loss", float(np.mean(batch_policy_losses)), step=step_idx)
+            if batch_value_losses:
+                log_metric("ppo/value_loss", float(np.mean(batch_value_losses)), step=step_idx)
+            if batch_entropies:
+                log_metric("ppo/entropy", float(np.mean(batch_entropies)), step=step_idx)
+            if batch_clip_fractions:
+                log_metric("ppo/clip_fraction", float(np.mean(batch_clip_fractions)), step=step_idx)
+            log_metric("ppo/approx_kl", approx_kl, step=step_idx)
+            log_metric("ppo/rollout_steps", steps_collected, step=step_idx)
+            if rollout_rewards:
+                log_metric("ppo/rollout_reward_mean", float(np.mean(rollout_rewards)), step=step_idx)
 
-        if not show_progress and step_idx % 50 == 0:
-            recent = episode_rewards[-50:] or episode_rewards
-            avg_recent = float(np.mean(recent)) if recent else 0.0
-            logger.info("[PPO Update {}] avg_reward (last 50 episodes): {:.2f}", step_idx, avg_recent)
-            log_metric("ppo/avg_reward_last_50", avg_recent, step=step_idx)
+            if not show_progress and step_idx % 50 == 0:
+                recent = episode_rewards[-50:] or episode_rewards
+                avg_recent = float(np.mean(recent)) if recent else 0.0
+                logger.info("[PPO Update {}] avg_reward (last 50 episodes): {:.2f}", step_idx, avg_recent)
+                log_metric("ppo/avg_reward_last_50", avg_recent, step=step_idx)
 
-        log_metric("ppo/completed_episodes", completed_episodes, step=step_idx)
+            log_metric("ppo/completed_episodes", completed_episodes, step=step_idx)
 
     model_bundle = {"state_dict": net.state_dict(), "action_dim": action_dim}
     return PPOResult(episode_rewards=episode_rewards, config=env_config, model_bundle=model_bundle)
