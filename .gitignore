@@ -1,3 +1,7 @@
 checkpoint*/
 checkpoints/*
 logs/*
+mlruns/*
+__pycache__/
+*.pyc
+*.pyo
