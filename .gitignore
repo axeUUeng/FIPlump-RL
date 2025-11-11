@@ -5,3 +5,5 @@ mlruns/*
 __pycache__/
 *.pyc
 *.pyo
+*.py[cod]
+*$py.class
